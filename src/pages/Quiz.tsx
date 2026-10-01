@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import axios from "axios"
 import { Area, AreaChart, ResponsiveContainer, Tooltip } from "recharts"
-import { FiArrowLeft, FiArrowRight, FiAward, FiCheck, FiHeadphones, FiLoader, FiLock, FiPlay, FiRotateCcw, FiVolume2, FiZap } from "react-icons/fi"
+import { FiArrowLeft, FiArrowRight, FiAward, FiCheck, FiHeadphones, FiLoader, FiLock, FiPause, FiPlay, FiRotateCcw, FiVolume2, FiZap } from "react-icons/fi"
 import Workspace from "../components/Workspace"
 import { questionBank } from "../questionBank"
 import { questionSources } from "../questionSources"
@@ -49,6 +49,7 @@ export default function Quiz() {
   const [mastered, setMastered] = useState(readMastered)
   const [attempted, setAttempted] = useState(readAttempted)
   const [speakingId, setSpeakingId] = useState<string | null>(null)
+  const [speechPaused, setSpeechPaused] = useState(false)
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState("")
   const [aiQuestionId, setAiQuestionId] = useState<number | null>(null)
@@ -87,6 +88,7 @@ export default function Quiz() {
     setAiQuestionId(null)
     window.speechSynthesis?.cancel()
     setSpeakingId(null)
+    setSpeechPaused(false)
   }
 
   function resetProgress() {
@@ -101,6 +103,7 @@ export default function Quiz() {
     setAiError("")
     window.speechSynthesis?.cancel()
     setSpeakingId(null)
+    setSpeechPaused(false)
   }
 
   function openQuestion(index: number) {
@@ -112,6 +115,7 @@ export default function Quiz() {
     setAiError("")
     window.speechSynthesis?.cancel()
     setSpeakingId(null)
+    setSpeechPaused(false)
   }
 
   function chooseAnswer(option: string) {
@@ -135,15 +139,45 @@ export default function Quiz() {
     if (speakingId === id) {
       window.speechSynthesis.cancel()
       setSpeakingId(null)
+      setSpeechPaused(false)
       return
     }
     window.speechSynthesis.cancel()
     const utterance = new SpeechSynthesisUtterance(text)
     utterance.lang = "en-US"
-    utterance.onend = () => setSpeakingId(null)
-    utterance.onerror = () => setSpeakingId(null)
+    utterance.onend = () => {
+      setSpeakingId(null)
+      setSpeechPaused(false)
+    }
+    utterance.onerror = () => {
+      setSpeakingId(null)
+      setSpeechPaused(false)
+    }
     setSpeakingId(id)
+    setSpeechPaused(false)
     window.speechSynthesis.speak(utterance)
+  }
+
+  function toggleSpeechPause() {
+    if (speechPaused) {
+      window.speechSynthesis.resume()
+      setSpeechPaused(false)
+    } else {
+      window.speechSynthesis.pause()
+      setSpeechPaused(true)
+    }
+  }
+
+  function stopSpeech() {
+    window.speechSynthesis.cancel()
+    setSpeakingId(null)
+    setSpeechPaused(false)
+  }
+
+  function correctAnswerText() {
+    const source = questionSources[question.id] ?? ""
+    const explanation = source.split(/\r?\n\s*\r?\n/).find((paragraph) => /^(?:and\s+)?the correct answers?\s+(?:is|are)\b/i.test(paragraph.trim()))
+    return explanation?.trim() ?? `${question.correct.join(" and ")}. ${question.explanation}`
   }
 
   async function askForExplanation() {
@@ -198,7 +232,7 @@ export default function Quiz() {
           <div className="quiz-progress-panel">
             <div className="quiz-progress-top">
               <div><span className="quiz-set-label">SET {String(groupIndex + 1).padStart(2, "0")} <span>/</span> {question.concept}</span><strong>Question {questionIndex + 1} <span>of {groupQuestions.length}</span></strong></div>
-              <button className={`voice-button${speakingId === "question" ? " is-speaking" : ""}`} type="button" aria-label="Read question aloud" title="Read question aloud" onClick={() => speak("question", `${question.prompt} ${question.chooseCount > 1 ? `Choose ${question.chooseCount}.` : "Choose one answer."}`)}>
+              <button className={`voice-button${speakingId === "question" ? " is-speaking" : ""}`} type="button" aria-label="Read question aloud" title="Read question aloud" onClick={() => speak("question", question.prompt)}>
                 {speakingId === "question" ? <FiHeadphones size={15} /> : <FiVolume2 size={15} />}
               </button>
             </div>
@@ -206,6 +240,14 @@ export default function Quiz() {
             <p className="quiz-prompt">{question.prompt}</p>
             <p className="choose-hint">{question.chooseCount > 1 ? `Choose ${question.chooseCount} answers` : "Choose the best answer"}</p>
           </div>
+
+          {speakingId && <div className="speech-controls" role="group" aria-label="Read-aloud playback controls">
+            <span>{speechPaused ? "Reading paused" : "Reading aloud"}</span>
+            <button className="speech-control-button" type="button" onClick={toggleSpeechPause} aria-label={speechPaused ? "Resume reading" : "Pause reading"} title={speechPaused ? "Resume reading" : "Pause reading"}>
+              {speechPaused ? <FiPlay size={14} /> : <FiPause size={14} />}{speechPaused ? "Resume" : "Pause"}
+            </button>
+            <button className="speech-control-button" type="button" onClick={stopSpeech} aria-label="Stop reading" title="Stop reading"><FiRotateCcw size={13} /> Stop</button>
+          </div>}
 
           <div className="quiz-options" role="group" aria-label="Answer choices">
             {question.options.map((option) => {
@@ -217,12 +259,18 @@ export default function Quiz() {
                 <div className={`quiz-option${selected ? " is-selected" : ""}${answerClass}`} key={option.letter}>
                   <button className="option-select" type="button" aria-pressed={selected} aria-describedby={`${id}-definition`} onClick={() => chooseAnswer(option.text)}>
                     <span className="option-letter">{option.letter}</span>
-                    <span className="option-copy">{option.text}<span id={`${id}-definition`} className="option-definition" role="tooltip">{option.definition}</span></span>
+                    <span className="option-copy">{option.text}</span>
                     <span className="option-mark" aria-hidden="true">{isCorrect !== null && answerIsCorrect ? <FiCheck size={15} /> : null}</span>
                   </button>
-                  <button className={`option-voice${speakingId === id ? " is-speaking" : ""}`} type="button" aria-label={`Read answer ${option.letter} aloud`} title={`Read aloud: ${option.text}`} onClick={() => speak(id, option.text)}>
+                  <button className={`option-voice${speakingId === id ? " is-speaking" : ""}`} type="button" aria-label={`Read answer ${option.letter} and definition aloud`} title={`Read aloud: ${option.text} and its definition`} onClick={() => speak(id, `${option.text}. ${option.definition}`)}>
                     {speakingId === id ? <FiHeadphones size={14} /> : <FiVolume2 size={14} />}
                   </button>
+                  <div className="option-definition-popup">
+                    <button className="definition-voice" type="button" aria-label={`Read ${option.text} definition aloud`} title={`Read ${option.text} definition aloud`} onClick={() => speak(`definition-${id}`, `${option.text}. ${option.definition}`)}>
+                      {speakingId === `definition-${id}` ? <FiHeadphones size={14} /> : <FiVolume2 size={14} />}
+                    </button>
+                    <span id={`${id}-definition`} className="option-definition" role="tooltip">{option.definition}</span>
+                  </div>
                 </div>
               )
             })}
@@ -240,17 +288,14 @@ export default function Quiz() {
               <div className="feedback-heading">
                 <span className="feedback-icon">{isCorrect ? <FiCheck size={15} /> : <FiRotateCcw size={15} />}</span>
                 <strong>{isCorrect ? "That's right." : "Not quite. Give it another try."}</strong>
-                <button className="voice-button feedback-voice" type="button" aria-label="Read explanation aloud" title="Read explanation aloud" onClick={() => speak("explanation", questionSources[question.id] ?? question.explanation)}>
-                  {speakingId === "explanation" ? <FiHeadphones size={14} /> : <FiVolume2 size={14} />}
-                </button>
               </div>
               <details className="source-walkthrough" open>
-                <summary>Read the complete supplied question and answer walkthrough</summary>
-                <button className="listen-link source-voice" type="button" onClick={() => speak("source-walkthrough", questionSources[question.id] ?? question.explanation)}>
-                  {speakingId === "source-walkthrough" ? <FiHeadphones size={13} /> : <FiPlay size={12} />}
-                  {speakingId === "source-walkthrough" ? "Stop reading" : "Read walkthrough aloud"}
+                <summary>Read the complete answer walkthrough</summary>
+                <button className="listen-link source-voice" type="button" onClick={() => speak("correct-answer", correctAnswerText())}>
+                  {speakingId === "correct-answer" ? <FiHeadphones size={13} /> : <FiPlay size={12} />}
+                  {speakingId === "correct-answer" ? "Stop reading" : "Read correct answer aloud"}
                 </button>
-                <div className="source-transcript">{questionSources[question.id]}</div>
+                <div className="source-transcript">{correctAnswerText()}</div>
               </details>
               {!isCorrect && <span className="correct-answer-note">Correct answer: {question.correct.join(" and ")}</span>}
               {isCorrect && <button className="ai-explain-button" type="button" onClick={askForExplanation} disabled={aiLoading}>

@@ -1,4 +1,5 @@
 import { getOriginalQuestionPresentation } from "./questionSources"
+import { getFullTermDefinition } from "./questionDefinitions"
 
 export interface QuizOption {
   letter: string
@@ -298,7 +299,7 @@ export const questionBank: QuizQuestion[] = rawQuestions.sort((left, right) => l
       return {
         letter: String.fromCharCode(65 + index),
         text,
-        definition: definition ?? `${text} is a security term. Review the explanation after submitting your answer.`,
+        definition: getFullTermDefinition(question.id, text) ?? definition ?? `${text} is a security term. Review the explanation after submitting your answer.`,
       }
     }),
   }
