@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import axios from "axios"
 import { Area, AreaChart, ResponsiveContainer, Tooltip } from "recharts"
 import { FiArrowLeft, FiArrowRight, FiAward, FiCheck, FiHeadphones, FiLoader, FiLock, FiPause, FiPlay, FiRotateCcw, FiVolume2, FiZap } from "react-icons/fi"
@@ -10,7 +10,13 @@ import type { AnswerSet, TermDefinition } from "../types"
 
 const groups = Array.from({ length: Math.ceil(questionBank.length / 10) }, (_, index) => questionBank.slice(index * 10, (index + 1) * 10))
 const masteredKey = "answerlab-mastered-question-ids"
-const attemptedKey = "answerlab-attempted-question-ids"
+const responsesKey = "answerlab-question-responses"
+const sectionScoresKey = "answerlab-section-scores"
+
+interface ScreenWakeLockSentinel {
+  release(): Promise<void>
+  addEventListener(type: "release", listener: () => void, options?: { once?: boolean }): void
+}
 
 function readMastered(): number[] {
   try {
@@ -21,13 +27,38 @@ function readMastered(): number[] {
   }
 }
 
-function readAttempted(): number[] {
+function readResponses(): Record<number, string[]> {
   try {
-    const saved: unknown = JSON.parse(localStorage.getItem(attemptedKey) ?? "[]")
-    return Array.isArray(saved) ? saved.filter((id): id is number => Number.isInteger(id) && id > 0 && id <= questionBank.length) : []
+    const saved: unknown = JSON.parse(localStorage.getItem(responsesKey) ?? "{}")
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return {}
+    return Object.fromEntries(Object.entries(saved).flatMap(([key, values]) => {
+      const id = Number(key)
+      return Number.isInteger(id) && id > 0 && id <= questionBank.length && Array.isArray(values)
+        ? [[id, values.filter((value): value is string => typeof value === "string")]]
+        : []
+    }))
   } catch {
-    return []
+    return {}
   }
+}
+
+function readSectionScores(): Record<number, number> {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(sectionScoresKey) ?? "{}")
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return {}
+    return Object.fromEntries(Object.entries(saved).flatMap(([key, score]) => {
+      const index = Number(key)
+      return Number.isInteger(index) && index >= 0 && index < groups.length && typeof score === "number" && score >= 0
+        ? [[index, score]]
+        : []
+    }))
+  } catch {
+    return {}
+  }
+}
+
+function responseIsCorrect(correct: string[], selected: string[]) {
+  return selected.length === correct.length && correct.every((option) => selected.some((answer) => answer.toLowerCase() === option.toLowerCase()))
 }
 
 function AnswerText({ answer, terms }: { answer: string; terms: TermDefinition[] }) {
@@ -44,23 +75,30 @@ export default function Quiz() {
   const answerSet = useAppSelector((state) => state.answers)
   const [groupIndex, setGroupIndex] = useState(0)
   const [questionIndex, setQuestionIndex] = useState(0)
-  const [selection, setSelection] = useState<string[]>([])
-  const [isCorrect, setIsCorrect] = useState<boolean | null>(null)
   const [mastered, setMastered] = useState(readMastered)
-  const [attempted, setAttempted] = useState(readAttempted)
+  const [responses, setResponses] = useState(readResponses)
+  const [sectionScores, setSectionScores] = useState(readSectionScores)
   const [speakingId, setSpeakingId] = useState<string | null>(null)
   const [speechPaused, setSpeechPaused] = useState(false)
+  const [keepScreenAwake, setKeepScreenAwake] = useState(false)
+  const [wakeLockActive, setWakeLockActive] = useState(false)
+  const [wakeLockError, setWakeLockError] = useState("")
+  const wakeLockRef = useRef<ScreenWakeLockSentinel | null>(null)
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState("")
   const [aiQuestionId, setAiQuestionId] = useState<number | null>(null)
 
   const groupQuestions = groups[groupIndex] ?? []
   const question = groupQuestions[questionIndex] ?? questionBank[0]
-  const groupMastered = groupQuestions.filter(({ id }) => mastered.includes(id)).length
-  const groupAttempted = groupQuestions.filter(({ id }) => attempted.includes(id)).length
-  const groupFullyAttempted = groupAttempted === groupQuestions.length
+  const selection = responses[question.id] ?? []
+  const submittedScore = sectionScores[groupIndex]
+  const isSectionSubmitted = submittedScore !== undefined
+  const groupAnswered = groupQuestions.filter(({ id, chooseCount }) => (responses[id]?.length ?? 0) === chooseCount).length
+  const groupMastered = submittedScore ?? groupQuestions.filter(({ id }) => mastered.includes(id)).length
+  const isCorrect = isSectionSubmitted ? responseIsCorrect(question.correct, selection) : null
+  const groupFullyAttempted = isSectionSubmitted
   const groupGoal = groupQuestions.length < 10 ? groupQuestions.length : 9
-  const isGroupPassed = groupMastered >= groupGoal
+  const isGroupPassed = submittedScore !== undefined ? submittedScore >= groupGoal : groupMastered >= groupGoal
   const correctTotal = mastered.length
 
   useEffect(() => {
@@ -68,23 +106,89 @@ export default function Quiz() {
   }, [mastered])
 
   useEffect(() => {
-    localStorage.setItem(attemptedKey, JSON.stringify(attempted))
-  }, [attempted])
+    localStorage.setItem(responsesKey, JSON.stringify(responses))
+  }, [responses])
+
+  useEffect(() => {
+    localStorage.setItem(sectionScoresKey, JSON.stringify(sectionScores))
+  }, [sectionScores])
 
   useEffect(() => () => window.speechSynthesis?.cancel(), [])
+
+  useEffect(() => {
+    let cancelled = false
+    const wakeLockApi = (navigator as Navigator & { wakeLock?: { request(type: "screen"): Promise<ScreenWakeLockSentinel> } }).wakeLock
+
+    if (!keepScreenAwake) {
+      const currentLock = wakeLockRef.current
+      wakeLockRef.current = null
+      if (currentLock) void currentLock.release()
+      return
+    }
+
+    if (!wakeLockApi) {
+      return
+    }
+
+    async function acquireWakeLock() {
+      if (cancelled || document.visibilityState !== "visible" || wakeLockRef.current) return
+      try {
+        const lock = await wakeLockApi.request("screen")
+        if (cancelled || document.visibilityState !== "visible") {
+          void lock.release()
+          return
+        }
+        wakeLockRef.current = lock
+        setWakeLockActive(true)
+        lock.addEventListener("release", () => {
+          if (wakeLockRef.current === lock) {
+            wakeLockRef.current = null
+            setWakeLockActive(false)
+          }
+        }, { once: true })
+      } catch {
+        if (!cancelled) {
+          setWakeLockActive(false)
+          setWakeLockError("The browser could not keep the screen awake.")
+          setKeepScreenAwake(false)
+        }
+      }
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        void acquireWakeLock()
+      } else if (wakeLockRef.current) {
+        const currentLock = wakeLockRef.current
+        wakeLockRef.current = null
+        void currentLock.release()
+        setWakeLockActive(false)
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+    void acquireWakeLock()
+    return () => {
+      cancelled = true
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+      const currentLock = wakeLockRef.current
+      wakeLockRef.current = null
+      if (currentLock) void currentLock.release()
+      setWakeLockActive(false)
+    }
+  }, [keepScreenAwake])
 
   function groupUnlocked(index: number) {
     if (index === 0) return true
     const previousGroup = groups[index - 1] ?? []
-    return previousGroup.filter(({ id }) => mastered.includes(id)).length >= 9
+    const previousScore = sectionScores[index - 1]
+    return previousScore !== undefined ? previousScore >= 9 : previousGroup.filter(({ id }) => mastered.includes(id)).length >= 9
   }
 
   function openGroup(index: number) {
     if (!groupUnlocked(index)) return
     setGroupIndex(index)
     setQuestionIndex(0)
-    setSelection([])
-    setIsCorrect(null)
     setAiQuestionId(null)
     window.speechSynthesis?.cancel()
     setSpeakingId(null)
@@ -94,11 +198,10 @@ export default function Quiz() {
   function resetProgress() {
     if (!window.confirm("Reset all question progress? This clears mastered answers and unlocks.")) return
     setMastered([])
-    setAttempted([])
+    setResponses({})
+    setSectionScores({})
     setGroupIndex(0)
     setQuestionIndex(0)
-    setSelection([])
-    setIsCorrect(null)
     setAiQuestionId(null)
     setAiError("")
     window.speechSynthesis?.cancel()
@@ -109,8 +212,6 @@ export default function Quiz() {
   function openQuestion(index: number) {
     if (index < 0 || index >= groupQuestions.length) return
     setQuestionIndex(index)
-    setSelection([])
-    setIsCorrect(null)
     setAiQuestionId(null)
     setAiError("")
     window.speechSynthesis?.cancel()
@@ -119,19 +220,31 @@ export default function Quiz() {
   }
 
   function chooseAnswer(option: string) {
-    if (isCorrect === true) return
-    setSelection((current) => {
-      if (question.chooseCount === 1) return [option]
-      return current.includes(option) ? current.filter((value) => value !== option) : current.length < question.chooseCount ? [...current, option] : current
-    })
-    setIsCorrect(null)
+    if (isSectionSubmitted) return
+    const updatedSelection = question.chooseCount === 1
+      ? [option]
+      : selection.includes(option)
+        ? selection.filter((value) => value !== option)
+        : selection.length < question.chooseCount
+          ? [...selection, option]
+          : selection
+    setResponses((current) => ({ ...current, [question.id]: updatedSelection }))
   }
 
-  function checkAnswer() {
-    const correct = selection.length === question.correct.length && question.correct.every((option) => selection.some((selected) => selected.toLowerCase() === option.toLowerCase()))
-    setIsCorrect(correct)
-    setAttempted((current) => current.includes(question.id) ? current : [...current, question.id])
-    if (correct) setMastered((current) => current.includes(question.id) ? current : [...current, question.id])
+  function submitSection() {
+    const correctIds = groupQuestions
+      .filter(({ id, correct }) => responseIsCorrect(correct, responses[id] ?? []))
+      .map(({ id }) => id)
+    const groupIds = new Set(groupQuestions.map(({ id }) => id))
+    setMastered((current) => [...current.filter((id) => !groupIds.has(id)), ...correctIds])
+    setSectionScores((current) => ({ ...current, [groupIndex]: correctIds.length }))
+  }
+
+  function retrySection() {
+    setSectionScores((current) => Object.fromEntries(Object.entries(current).filter(([index]) => Number(index) !== groupIndex)))
+    const groupIds = new Set(groupQuestions.map(({ id }) => id))
+    setMastered((current) => current.filter((id) => !groupIds.has(id)))
+    setQuestionIndex(0)
   }
 
   function speak(id: string, text: string) {
@@ -196,10 +309,12 @@ export default function Quiz() {
   }
 
   const activity = groups.map((items, index) => ({ set: `S${index + 1}`, count: items.filter(({ id }) => mastered.includes(id)).length }))
-  const percent = Math.round((groupMastered / groupQuestions.length) * 100)
+  const percent = Math.round(((isSectionSubmitted ? submittedScore ?? 0 : groupAnswered) / groupQuestions.length) * 100)
   const hasNextQuestion = questionIndex < groupQuestions.length - 1
-  const canAdvanceSet = groupIndex < groups.length - 1 && groupMastered >= 9
+  const canAdvanceSet = groupIndex < groups.length - 1 && submittedScore !== undefined && submittedScore >= 9
+  const allQuestionsAnswered = groupAnswered === groupQuestions.length
   const aiProposals = aiQuestionId === question.id ? answerSet.proposals : []
+  const wakeLockSupported = typeof navigator !== "undefined" && "wakeLock" in navigator
 
   return (
     <Workspace>
@@ -215,13 +330,15 @@ export default function Quiz() {
       <div className="quiz-groups" aria-label="Question sets">
         {groups.map((items, index) => {
           const count = items.filter(({ id }) => mastered.includes(id)).length
+          const answered = items.filter(({ id, chooseCount }) => (responses[id]?.length ?? 0) === chooseCount).length
+          const score = sectionScores[index]
           const unlocked = groupUnlocked(index)
-          const passed = count >= (items.length < 10 ? items.length : 9)
+          const passed = score !== undefined ? score >= (items.length < 10 ? items.length : 9) : count >= (items.length < 10 ? items.length : 9)
           return (
             <button key={items[0].id} className={`group-tab${groupIndex === index ? " is-active" : ""}${passed ? " is-passed" : ""}`} type="button" disabled={!unlocked} onClick={() => openGroup(index)} aria-current={groupIndex === index ? "step" : undefined} title={unlocked ? `Open set ${index + 1}` : "Answer 9 of 10 correctly in the previous set to unlock"}>
               <span className="group-tab-top"><span>SET {String(index + 1).padStart(2, "0")}</span>{!unlocked ? <FiLock size={12} /> : passed ? <FiCheck size={12} /> : null}</span>
               <strong>{String(items[0].id).padStart(2, "0")}-{String(items[items.length - 1].id).padStart(2, "0")}</strong>
-              <span className="group-tab-progress">{count}/{items.length} correct</span>
+              <span className="group-tab-progress">{score !== undefined ? `${score}/${items.length} score` : `${answered}/${items.length} answered`}</span>
             </button>
           )
         })}
@@ -236,7 +353,7 @@ export default function Quiz() {
                 {speakingId === "question" ? <FiHeadphones size={15} /> : <FiVolume2 size={15} />}
               </button>
             </div>
-            <div className="progress-track" role="progressbar" aria-label="Set mastery" aria-valuenow={groupMastered} aria-valuemin={0} aria-valuemax={groupQuestions.length}><span style={{ width: `${percent}%` }} /></div>
+            <div className="progress-track" role="progressbar" aria-label={isSectionSubmitted ? "Section score" : "Questions answered"} aria-valuenow={isSectionSubmitted ? submittedScore : groupAnswered} aria-valuemin={0} aria-valuemax={groupQuestions.length}><span style={{ width: `${percent}%` }} /></div>
             <p className="quiz-prompt">{question.prompt}</p>
             <p className="choose-hint">{question.chooseCount > 1 ? `Choose ${question.chooseCount} answers` : "Choose the best answer"}</p>
           </div>
@@ -277,10 +394,8 @@ export default function Quiz() {
           </div>
 
           <div className="answer-actions">
-            <span>{selection.length === question.chooseCount ? "Ready when you are" : `Select ${question.chooseCount - selection.length} more`}</span>
-            <button className="generate-button check-answer-button" type="button" onClick={checkAnswer} disabled={selection.length !== question.chooseCount || isCorrect !== null}>
-              {isCorrect === true ? <FiCheck size={14} /> : <FiCheck size={14} />}{isCorrect === true ? "Mastered" : "Check answer"}
-            </button>
+            <span>{groupAnswered} of {groupQuestions.length} questions answered</span>
+            <span>{selection.length === question.chooseCount ? "Selection saved" : `Select ${question.chooseCount - selection.length} more`}</span>
           </div>
 
           {isCorrect !== null && (
@@ -318,13 +433,21 @@ export default function Quiz() {
           <div className="question-navigation">
             <button className="nav-quiet" type="button" onClick={() => openQuestion(questionIndex - 1)} disabled={questionIndex === 0}><FiArrowLeft size={14} /> Previous</button>
             <span>Question {question.id} of {questionBank.length}</span>
-            {hasNextQuestion ? <button className="generate-button" type="button" onClick={() => openQuestion(questionIndex + 1)}>Next question <FiArrowRight size={14} /></button> : canAdvanceSet ? <button className="generate-button" type="button" onClick={() => openGroup(groupIndex + 1)}>Continue to set {String(groupIndex + 2).padStart(2, "0")} <FiArrowRight size={14} /></button> : groupIndex === groups.length - 1 && isGroupPassed ? <span className="final-complete"><FiCheck size={14} /> Course complete</span> : <span className="locked-next"><FiLock size={12} /> Master 9/10 to continue</span>}
+            {hasNextQuestion
+              ? <button className="generate-button" type="button" onClick={() => openQuestion(questionIndex + 1)} disabled={selection.length !== question.chooseCount}>Next question <FiArrowRight size={14} /></button>
+              : !isSectionSubmitted
+                ? <button className="generate-button" type="button" onClick={submitSection} disabled={!allQuestionsAnswered}>Submit set score <FiCheck size={14} /></button>
+                : canAdvanceSet
+                  ? <button className="generate-button" type="button" onClick={() => openGroup(groupIndex + 1)}>Continue to set {String(groupIndex + 2).padStart(2, "0")} <FiArrowRight size={14} /></button>
+                  : groupIndex === groups.length - 1 && isGroupPassed
+                    ? <span className="final-complete"><FiCheck size={14} /> Course complete</span>
+                    : <button className="nav-quiet" type="button" onClick={retrySection}><FiRotateCcw size={14} /> Revise this set</button>}
           </div>
-          {isGroupPassed && groupIndex < groups.length - 1 && <div className="unlock-banner"><FiCheck size={14} /><span><strong>Set complete.</strong> You mastered {groupMastered} of {groupQuestions.length}; the next set is unlocked.</span></div>}
+          {isGroupPassed && isSectionSubmitted && groupIndex < groups.length - 1 && <div className="unlock-banner"><FiCheck size={14} /><span><strong>Set complete.</strong> You scored {submittedScore} of {groupQuestions.length}; the next set is unlocked.</span></div>}
           {groupFullyAttempted && <section className="set-score-result" aria-live="polite" aria-label={`Set ${groupIndex + 1} score`}>
             <span className="score-result-icon"><FiAward size={17} /></span>
-            <div className="score-result-main"><span>SET {String(groupIndex + 1).padStart(2, "0")} SCORE</span><strong>{groupMastered}<small>/{groupQuestions.length}</small></strong></div>
-            <p>{groupMastered === groupQuestions.length ? "Perfect set. Every answer is correct." : groupMastered >= groupGoal ? "Set cleared. The next set is unlocked." : "Retry missed questions to improve your score."}</p>
+            <div className="score-result-main"><span>SET {String(groupIndex + 1).padStart(2, "0")} SCORE</span><strong>{submittedScore}<small>/{groupQuestions.length}</small></strong></div>
+            <p>{submittedScore === groupQuestions.length ? "Perfect set. Every answer is correct." : isGroupPassed ? "Set cleared. The next set is unlocked." : "Revise your answers and submit again to improve your score."}</p>
           </section>}
         </section>
 
@@ -338,6 +461,12 @@ export default function Quiz() {
               </div>
             </div>
             <div className="mastery-count"><strong>{correctTotal}<small>/{questionBank.length}</small></strong><span>correctly mastered</span></div>
+            <div className="screen-awake-setting">
+              <div><strong>Keep screen awake</strong><span>{wakeLockError || (wakeLockActive ? "Active while this page is visible" : wakeLockSupported ? "Prevent display sleep during practice" : "Not supported in this browser")}</span></div>
+              <button className={`screen-awake-switch${keepScreenAwake ? " is-on" : ""}`} type="button" role="switch" aria-checked={keepScreenAwake} aria-label="Keep screen awake" disabled={!wakeLockSupported} onClick={() => { setWakeLockError(""); setKeepScreenAwake((enabled) => !enabled) }}>
+                <span />
+              </button>
+            </div>
             <div className="chart-wrap">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={activity} margin={{ top: 9, right: 2, left: 2, bottom: 0 }}>
@@ -350,7 +479,7 @@ export default function Quiz() {
             <div className="chart-days">{activity.map(({ set }) => <span key={set}>{set}</span>)}</div>
           </section>
           <section className="rail-panel current-set-panel">
-            <div className="rail-heading"><h3>Set {String(groupIndex + 1).padStart(2, "0")}</h3><span>{groupMastered}/{groupQuestions.length}</span></div>
+            <div className="rail-heading"><h3>Set {String(groupIndex + 1).padStart(2, "0")}</h3><span>{isSectionSubmitted ? `${submittedScore}/${groupQuestions.length} score` : `${groupAnswered}/${groupQuestions.length} answered`}</span></div>
             <div className="current-concept"><span className="concept-dot" />{question.concept}</div>
             <p className="set-rule">{groupIndex === groups.length - 1 ? <>Answer all <strong>{groupQuestions.length} questions</strong> to finish the final set. Missed questions can be retried.</> : <>Answer <strong>9 out of 10</strong> correctly to unlock the next set. Missed questions can be retried.</>}</p>
           </section>

@@ -45,6 +45,7 @@ export default function Workspace({ children }: { children: ReactNode }) {
           <img className="trainer-image" src="/tim.jpeg" alt="Tims TCHOUAMOU" />
           <span className="trainer-label">YOUR TRAINER</span>
           <strong className="trainer-name">Tims TCHOUAMOU</strong>
+          <span className="trainer-role">Security Engineer</span>
           <div className="trainer-links" aria-label="TimSandTech channels">
             {trainerChannels.map(({ name, href, icon: ChannelIcon }) => (
               <a key={name} href={href} target="_blank" rel="noreferrer" aria-label={`Find TimSandTech on ${name}`} title={`Find TimSandTech on ${name}`}>
