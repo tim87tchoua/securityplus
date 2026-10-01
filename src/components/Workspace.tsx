@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react"
 import { NavLink, useLocation } from "react-router-dom"
-import { FiBookOpen, FiClock, FiHome, FiLinkedin, FiMenu, FiX } from "react-icons/fi"
+import { FiActivity, FiBookOpen, FiClock, FiHome, FiLinkedin, FiMenu, FiX } from "react-icons/fi"
 import { SiFacebook, SiInstagram, SiTiktok, SiYoutube } from "react-icons/si"
 import type { IconType } from "react-icons"
 
@@ -15,7 +15,7 @@ const trainerChannels: { name: string; href: string; icon: IconType }[] = [
 export default function Workspace({ children }: { children: ReactNode }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const location = useLocation()
-  const pageName = location.pathname === "/library" ? "Your sessions" : "Practice studio"
+  const pageName = location.pathname === "/library" ? "Your sessions" : location.pathname === "/labs" ? "Lab practique" : "Practice studio"
 
   return (
     <div className="app-shell">
@@ -32,6 +32,9 @@ export default function Workspace({ children }: { children: ReactNode }) {
           </NavLink>
           <NavLink className={({ isActive }) => `side-link${isActive ? " active" : ""}`} to="/library" onClick={() => setMenuOpen(false)}>
             <FiClock size={16} /><span>Your sessions</span>
+          </NavLink>
+          <NavLink className={({ isActive }) => `side-link${isActive ? " active" : ""}`} to="/labs" onClick={() => setMenuOpen(false)}>
+            <FiActivity size={16} /><span>Lab practique</span>
           </NavLink>
         </nav>
         <div className="side-divider" />
