@@ -1,5 +1,7 @@
 "use client"
 
+/* eslint react-refresh/only-export-components: off */
+
 import {
   Toaster as ChakraToaster,
   Portal,

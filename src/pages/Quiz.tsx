@@ -371,21 +371,24 @@ export default function Quiz() {
       .filter(Boolean)
 
     if (!sections.length) {
-      return [{ id: "question", label: `Q${question.id}-`, text: `${question.prompt}` }]
+      return [{ id: "question", label: String(question.id).padStart(2, "0"), text: `${question.prompt}` }]
     }
 
     const blocks = sections.map((section, index) => {
-      const clean = section.replace(/^Q\d+[.-]\s*/i, `Q${question.id}- `)
+      const clean = section.replace(/^Q\d+[.-]\s*/i, "").replace(/^\s*\d{1,2}\s*$/i, "")
       const label = index === 0
-        ? `Q${question.id}-`
+        ? ""
         : /^(?:Which|What)\b/i.test(clean)
-          ? "Prompt"
+          ? ""
           : /^(?:The correct answer|The correct answers)/i.test(clean)
             ? "Answer"
-            : /^(?:Definition|Definitions)/i.test(clean)
-              ? "Definition"
-              : "Detail"
-      return { id: `${question.id}-${index}`, label, text: clean }
+            : /^(?:Wrong answer|Wrong answers)/i.test(clean)
+              ? "Wrong answer"
+              : /^(?:Definition|Definitions)/i.test(clean)
+                ? "Definition"
+                : ""
+      const text = label === "Wrong answer" ? clean.replace(/^Wrong answer\s*[:.-]?\s*/i, "") : clean
+      return { id: `${question.id}-${index}`, label, text }
     })
 
     const combined = blocks.reduce<Array<{ id: string; label: string; text: string }>>((result, block) => {
@@ -522,13 +525,7 @@ export default function Quiz() {
                 <div className="source-transcript">
                   {getTranscriptBlocks().map((block, index) => (
                     <div className="source-block" key={`${block.id}-${index}`}>
-                      <div className="source-block-header">
-                        <strong>{block.label}</strong>
-                        <button className="listen-link" type="button" onClick={() => speak(`source-block-${block.id}`, block.text)}>
-                          {speakingId === `source-block-${block.id}` ? <FiHeadphones size={13} /> : <FiPlay size={12} />}
-                          {speakingId === `source-block-${block.id}` ? "Pause" : "Listen"}
-                        </button>
-                      </div>
+                      {block.label && <div className={`source-block-header${block.label === "Wrong answer" ? " wrong-answer-header" : ""}`}><strong>{block.label}</strong></div>}
                       <p>{block.text}</p>
                     </div>
                   ))}

@@ -301,6 +301,9 @@ body { font-size: 17px; }
 .source-walkthrough { margin-top: 12px; border-top: 1px solid #e8ebdf; padding-top: 10px; }
 .source-walkthrough summary { color: #647543; cursor: pointer; font-size: 12px; font-weight: 600; }
 .source-voice { margin-top: 8px; }
+.source-block-header { display: inline-flex; align-items: center; margin: 12px 0 6px; padding: 4px 10px; border-radius: 6px; background: #edf2d6; color: #44583b; font-size: 11px; font-weight: 700; letter-spacing: .2px; }
+.source-block-header strong { font-weight: 700; }
+.source-block-header.wrong-answer-header { background: #d63434; color: #fff; }
 .source-transcript { max-height: 430px; overflow: auto; margin-top: 10px; padding: 12px; border: 1px solid #e7eadf; border-radius: 7px; background: #fff; color: #59665b; font-size: 12px; line-height: 1.7; white-space: pre-wrap; }
 .history-layout { display: grid; grid-template-columns: minmax(0, 1fr) 290px; align-items: start; gap: 18px; }
 .history-list { display: grid; gap: 8px; }

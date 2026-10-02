@@ -30,18 +30,21 @@ function buildWalkthroughBlocks(questionId: number, source: string) {
   if (!blocks.length) return []
 
   return blocks.map((block, index) => {
-    const clean = block.replace(/^Q\d+[.-]\s*/i, `Q${questionId}- `)
+    const clean = block.replace(/^Q\d+[.-]\s*/i, "").replace(/^\s*\d{1,2}\s*$/i, "")
     const label = index === 0
-      ? `Q${questionId}-`
+      ? ""
       : /^(?:Which|What)\b/i.test(clean)
-        ? "Prompt"
+        ? ""
         : /^(?:The correct answer|The correct answers)/i.test(clean)
           ? "Answer"
-          : /^(?:Definition|Definitions)/i.test(clean)
-            ? "Definition"
-            : "Detail"
+          : /^(?:Wrong answer|Wrong answers)/i.test(clean)
+            ? "Wrong answer"
+            : /^(?:Definition|Definitions)/i.test(clean)
+              ? "Definition"
+              : ""
+    const text = label === "Wrong answer" ? clean.replace(/^Wrong answer\s*[:.-]?\s*/i, "") : clean
 
-    return { id: `${questionId}-${index}`, label, text: clean }
+    return { id: `${questionId}-${index}`, label, text }
   })
 }
 
@@ -138,18 +141,20 @@ export default function SectionResults() {
             </div>
 
             <div className="result-correct-answer">
-              {blocks.length ? blocks.map((block) => (
-                <div key={block.id} className="result-walkthrough-block">
-                  <div className="source-block-header">
-                    <strong>{block.label}</strong>
-                    <button className="listen-link" type="button" onClick={() => speakBlock(`result-${block.id}`, block.text)}>
-                      {activeAudioId === `result-${block.id}` ? <FiHeadphones size={13} /> : <FiVolume2 size={12} />}
-                      {activeAudioId === `result-${block.id}` ? (audioPaused ? "Resume" : "Pause") : "Listen"}
-                    </button>
-                  </div>
-                  <p>{block.text}</p>
-                </div>
-              )) : (
+              {blocks.length ? (
+                <>
+                  <button className="listen-link source-voice" type="button" onClick={() => speakBlock(`result-${question.questionId}`, blocks.map((block) => block.text).join("\n\n"))}>
+                    {activeAudioId === `result-${question.questionId}` ? <FiHeadphones size={13} /> : <FiVolume2 size={12} />}
+                    {activeAudioId === `result-${question.questionId}` ? (audioPaused ? "Resume full walkthrough" : "Pause full walkthrough") : "Read full walkthrough aloud"}
+                  </button>
+                  {blocks.map((block) => (
+                    <div key={block.id} className="result-walkthrough-block">
+                      {block.label && <div className={`source-block-header${block.label === "Wrong answer" ? " wrong-answer-header" : ""}`}><strong>{block.label}</strong></div>}
+                      <p>{block.text}</p>
+                    </div>
+                  ))}
+                </>
+              ) : (
                 <>
                   <strong>The correct answer is: {question.correctAnswers.map(({ term }) => term).join(" and ")}</strong>
                   {question.correctAnswers.map((answer) => (
