@@ -5,6 +5,7 @@ import { Provider as UrqlProvider, createClient, cacheExchange, fetchExchange } 
 import Workspace from "./components/Workspace"
 import Home from "./pages/Home"
 import Library from "./pages/Library"
+import SectionResults from "./pages/SectionResults"
 import { store } from "./store"
 
 const LabPractice = lazy(() => import("./pages/LabPractice"))
@@ -21,6 +22,7 @@ function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<Home />} />
+            <Route path="/results/:sectionNumber" element={<SectionResults />} />
             <Route path="/labs" element={<Suspense fallback={<Workspace><div className="lab-loading" role="status">Loading lab library...</div></Workspace>}><LabPractice /></Suspense>} />
             <Route path="/library" element={<Library />} />
           </Routes>

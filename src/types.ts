@@ -18,3 +18,23 @@ export interface AnswerSet {
   source: "openai" | "demo"
   proposals: Proposal[]
 }
+
+export interface CorrectAnswerDefinition {
+  term: string
+  definition: string
+}
+
+export interface SectionQuestionResult {
+  questionId: number
+  prompt: string
+  selectedAnswers: string[]
+  correctAnswers: CorrectAnswerDefinition[]
+  isCorrect: boolean
+}
+
+export interface SectionResult {
+  groupIndex: number
+  score: number
+  total: number
+  questions: SectionQuestionResult[]
+}

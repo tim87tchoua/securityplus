@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "server": "node server/index.js",
-    "dev:full": "concurrently -k \"npm:server\" \"npm:dev -- --host 0.0.0.0\"",
+    "dev:full": "node scripts/run-dev-full.js",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"

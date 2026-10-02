@@ -198,9 +198,20 @@ Sandboxing, the act of having a test isolated environment whereby you can do thi
 RADIUS is remote authentication dial-in user service. This is an authentication network protocol that is on networks to ensure that employees who authenticate are indeed legitimate and belong to the company.`,
 }
 
+function normalizeQuestionSource(raw: string) {
+  return raw
+    .replace(/\*\*/g, "")
+    .replace(/\r/g, "")
+    .split(/\n\s*\n/)
+    .map((section) => section.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n\n")
+}
+
 export function getOriginalQuestionPresentation(questionId: number) {
-  const sections = (questionSources[questionId] ?? "").split(/\r?\n\s*\r?\n/).map((section) => section.trim()).filter(Boolean)
-  const stem = sections[0]?.replace(/^Q\d+[.-]\s*/i, "") ?? ""
+  const source = normalizeQuestionSource(questionSources[questionId] ?? "")
+  const sections = source.split(/\n\s*\n/).map((section) => section.trim()).filter(Boolean)
+  const stem = sections[0]?.replace(/^Q(\d+)[.-]\s*/i, "Q$1- ").trim() ?? ""
   const questionLine = sections[1] ?? ""
   const choiceLine = sections[2] ?? ""
   const options = choiceLine

@@ -2,16 +2,24 @@ import { useEffect, useRef, useState } from "react"
 import axios from "axios"
 import { Area, AreaChart, ResponsiveContainer, Tooltip } from "recharts"
 import { FiArrowLeft, FiArrowRight, FiAward, FiCheck, FiHeadphones, FiLoader, FiLock, FiPause, FiPlay, FiRotateCcw, FiVolume2, FiZap } from "react-icons/fi"
+import { useLocation, useNavigate } from "react-router-dom"
 import Workspace from "../components/Workspace"
 import { questionBank } from "../questionBank"
+import { getFullTermDefinition } from "../questionDefinitions"
 import { questionSources } from "../questionSources"
 import { setAnswerSet, useAppDispatch, useAppSelector } from "../store"
-import type { AnswerSet, TermDefinition } from "../types"
+import type { AnswerSet, SectionResult, TermDefinition } from "../types"
 
 const groups = Array.from({ length: Math.ceil(questionBank.length / 10) }, (_, index) => questionBank.slice(index * 10, (index + 1) * 10))
 const masteredKey = "answerlab-mastered-question-ids"
 const responsesKey = "answerlab-question-responses"
 const sectionScoresKey = "answerlab-section-scores"
+const sectionResultsKey = "answerlab-section-results"
+
+interface QuizRouteState {
+  resumeGroupIndex?: number
+  retrySection?: boolean
+}
 
 interface ScreenWakeLockSentinel {
   release(): Promise<void>
@@ -57,10 +65,19 @@ function readSectionScores(): Record<number, number> {
   }
 }
 
+function readSectionResults(): Record<number, SectionResult> {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(sectionResultsKey) ?? "{}")
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return {}
+    return saved as Record<number, SectionResult>
+  } catch {
+    return {}
+  }
+}
+
 function responseIsCorrect(correct: string[], selected: string[]) {
   return selected.length === correct.length && correct.every((option) => selected.some((answer) => answer.toLowerCase() === option.toLowerCase()))
 }
-
 function AnswerText({ answer, terms }: { answer: string; terms: TermDefinition[] }) {
   if (!terms.length) return <>{answer}</>
   const matcher = new RegExp(`(${terms.map(({ term }) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "gi")
@@ -73,11 +90,26 @@ function AnswerText({ answer, terms }: { answer: string; terms: TermDefinition[]
 export default function Quiz() {
   const dispatch = useAppDispatch()
   const answerSet = useAppSelector((state) => state.answers)
-  const [groupIndex, setGroupIndex] = useState(0)
+  const navigate = useNavigate()
+  const location = useLocation()
+  const routeState = location.state as QuizRouteState | null
+  const requestedGroupIndex = routeState?.resumeGroupIndex
+  const initialGroupIndex = typeof requestedGroupIndex === "number" && Number.isInteger(requestedGroupIndex) && requestedGroupIndex >= 0 && requestedGroupIndex < groups.length ? requestedGroupIndex : 0
+  const [groupIndex, setGroupIndex] = useState(initialGroupIndex)
   const [questionIndex, setQuestionIndex] = useState(0)
-  const [mastered, setMastered] = useState(readMastered)
+  const [mastered, setMastered] = useState(() => {
+    const saved = readMastered()
+    if (!routeState?.retrySection) return saved
+    const revisingIds = new Set((groups[initialGroupIndex] ?? []).map(({ id }) => id))
+    return saved.filter((id) => !revisingIds.has(id))
+  })
   const [responses, setResponses] = useState(readResponses)
-  const [sectionScores, setSectionScores] = useState(readSectionScores)
+  const [sectionScores, setSectionScores] = useState(() => {
+    const saved = readSectionScores()
+    if (routeState?.retrySection) delete saved[initialGroupIndex]
+    return saved
+  })
+  const [sectionResults, setSectionResults] = useState(readSectionResults)
   const [speakingId, setSpeakingId] = useState<string | null>(null)
   const [speechPaused, setSpeechPaused] = useState(false)
   const [keepScreenAwake, setKeepScreenAwake] = useState(false)
@@ -112,6 +144,16 @@ export default function Quiz() {
   useEffect(() => {
     localStorage.setItem(sectionScoresKey, JSON.stringify(sectionScores))
   }, [sectionScores])
+
+  useEffect(() => {
+    localStorage.setItem(sectionResultsKey, JSON.stringify(sectionResults))
+  }, [sectionResults])
+
+  useEffect(() => {
+    if (!routeState?.retrySection && sectionScores[groupIndex] !== undefined) {
+      navigate(`/results/${groupIndex + 1}`, { replace: true })
+    }
+  }, [groupIndex, navigate, routeState?.retrySection, sectionScores])
 
   useEffect(() => () => window.speechSynthesis?.cancel(), [])
 
@@ -187,6 +229,10 @@ export default function Quiz() {
 
   function openGroup(index: number) {
     if (!groupUnlocked(index)) return
+    if (sectionScores[index] !== undefined) {
+      navigate(`/results/${index + 1}`)
+      return
+    }
     setGroupIndex(index)
     setQuestionIndex(0)
     setAiQuestionId(null)
@@ -200,6 +246,7 @@ export default function Quiz() {
     setMastered([])
     setResponses({})
     setSectionScores({})
+    setSectionResults({})
     setGroupIndex(0)
     setQuestionIndex(0)
     setAiQuestionId(null)
@@ -232,18 +279,46 @@ export default function Quiz() {
   }
 
   function submitSection() {
-    const correctIds = groupQuestions
-      .filter(({ id, correct }) => responseIsCorrect(correct, responses[id] ?? []))
-      .map(({ id }) => id)
+    const questions = groupQuestions.map((item) => {
+      const selectedAnswers = responses[item.id] ?? []
+      const isCorrect = responseIsCorrect(item.correct, selectedAnswers)
+      return {
+        questionId: item.id,
+        prompt: item.prompt,
+        selectedAnswers,
+        correctAnswers: item.correct.map((term) => ({
+          term,
+          definition: getFullTermDefinition(item.id, term) ?? item.explanation,
+        })),
+        isCorrect,
+      }
+    })
+    const correctIds = questions.filter(({ isCorrect }) => isCorrect).map(({ questionId }) => questionId)
+    const result: SectionResult = { groupIndex, score: correctIds.length, total: groupQuestions.length, questions }
     const groupIds = new Set(groupQuestions.map(({ id }) => id))
-    setMastered((current) => [...current.filter((id) => !groupIds.has(id)), ...correctIds])
-    setSectionScores((current) => ({ ...current, [groupIndex]: correctIds.length }))
+    const nextMastered = [...mastered.filter((id) => !groupIds.has(id)), ...correctIds]
+    const nextScores = { ...sectionScores, [groupIndex]: correctIds.length }
+    const nextResults = { ...sectionResults, [groupIndex]: result }
+    setMastered(nextMastered)
+    setSectionScores(nextScores)
+    setSectionResults(nextResults)
+    localStorage.setItem(masteredKey, JSON.stringify(nextMastered))
+    localStorage.setItem(sectionScoresKey, JSON.stringify(nextScores))
+    localStorage.setItem(sectionResultsKey, JSON.stringify(nextResults))
+    navigate(`/results/${groupIndex + 1}`)
   }
 
   function retrySection() {
-    setSectionScores((current) => Object.fromEntries(Object.entries(current).filter(([index]) => Number(index) !== groupIndex)))
+    const nextScores = Object.fromEntries(Object.entries(sectionScores).filter(([index]) => Number(index) !== groupIndex))
+    const nextResults = Object.fromEntries(Object.entries(sectionResults).filter(([index]) => Number(index) !== groupIndex))
     const groupIds = new Set(groupQuestions.map(({ id }) => id))
-    setMastered((current) => current.filter((id) => !groupIds.has(id)))
+    const nextMastered = mastered.filter((id) => !groupIds.has(id))
+    setSectionScores(nextScores)
+    setSectionResults(nextResults)
+    setMastered(nextMastered)
+    localStorage.setItem(sectionScoresKey, JSON.stringify(nextScores))
+    localStorage.setItem(sectionResultsKey, JSON.stringify(nextResults))
+    localStorage.setItem(masteredKey, JSON.stringify(nextMastered))
     setQuestionIndex(0)
   }
 
@@ -287,10 +362,53 @@ export default function Quiz() {
     setSpeechPaused(false)
   }
 
-  function correctAnswerText() {
+  function getTranscriptBlocks() {
     const source = questionSources[question.id] ?? ""
-    const explanation = source.split(/\r?\n\s*\r?\n/).find((paragraph) => /^(?:and\s+)?the correct answers?\s+(?:is|are)\b/i.test(paragraph.trim()))
-    return explanation?.trim() ?? `${question.correct.join(" and ")}. ${question.explanation}`
+    const sections = source
+      .replace(/\*\*/g, "")
+      .split(/\r?\n\s*\r?\n/)
+      .map((section) => section.replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+
+    if (!sections.length) {
+      return [{ id: "question", label: `Q${question.id}-`, text: `${question.prompt}` }]
+    }
+
+    const blocks = sections.map((section, index) => {
+      const clean = section.replace(/^Q\d+[.-]\s*/i, `Q${question.id}- `)
+      const label = index === 0
+        ? `Q${question.id}-`
+        : /^(?:Which|What)\b/i.test(clean)
+          ? "Prompt"
+          : /^(?:The correct answer|The correct answers)/i.test(clean)
+            ? "Answer"
+            : /^(?:Definition|Definitions)/i.test(clean)
+              ? "Definition"
+              : "Detail"
+      return { id: `${question.id}-${index}`, label, text: clean }
+    })
+
+    const combined = blocks.reduce<Array<{ id: string; label: string; text: string }>>((result, block) => {
+      if (!result.length) {
+        result.push(block)
+        return result
+      }
+
+      const previous = result[result.length - 1]
+      if (previous.label === block.label && previous.label === "Detail") {
+        previous.text = `${previous.text} ${block.text}`
+        return result
+      }
+
+      result.push(block)
+      return result
+    }, [])
+
+    return combined.slice(0, 6)
+  }
+
+  function correctAnswerText() {
+    return getTranscriptBlocks().map((block) => block.text).join("\n\n")
   }
 
   async function askForExplanation() {
@@ -369,25 +487,16 @@ export default function Quiz() {
           <div className="quiz-options" role="group" aria-label="Answer choices">
             {question.options.map((option) => {
               const selected = selection.includes(option.text)
-              const answerIsCorrect = question.correct.some((correct) => correct.toLowerCase() === option.text.toLowerCase())
-              const answerClass = isCorrect !== null && answerIsCorrect ? " is-correct" : isCorrect === false && selected ? " is-incorrect" : ""
               const id = `option-${question.id}-${option.letter}`
               return (
-                <div className={`quiz-option${selected ? " is-selected" : ""}${answerClass}`} key={option.letter}>
-                  <button className="option-select" type="button" aria-pressed={selected} aria-describedby={`${id}-definition`} onClick={() => chooseAnswer(option.text)}>
+                <div className={`quiz-option${selected ? " is-selected" : ""}`} key={option.letter}>
+                  <button className="option-select" type="button" aria-pressed={selected} onClick={() => chooseAnswer(option.text)}>
                     <span className="option-letter">{option.letter}</span>
                     <span className="option-copy">{option.text}</span>
-                    <span className="option-mark" aria-hidden="true">{isCorrect !== null && answerIsCorrect ? <FiCheck size={15} /> : null}</span>
                   </button>
-                  <button className={`option-voice${speakingId === id ? " is-speaking" : ""}`} type="button" aria-label={`Read answer ${option.letter} and definition aloud`} title={`Read aloud: ${option.text} and its definition`} onClick={() => speak(id, `${option.text}. ${option.definition}`)}>
+                  <button className={`option-voice${speakingId === id ? " is-speaking" : ""}`} type="button" aria-label={`Read answer ${option.letter} aloud`} title={`Read aloud: ${option.text}`} onClick={() => speak(id, option.text)}>
                     {speakingId === id ? <FiHeadphones size={14} /> : <FiVolume2 size={14} />}
                   </button>
-                  <div className="option-definition-popup">
-                    <button className="definition-voice" type="button" aria-label={`Read ${option.text} definition aloud`} title={`Read ${option.text} definition aloud`} onClick={() => speak(`definition-${id}`, `${option.text}. ${option.definition}`)}>
-                      {speakingId === `definition-${id}` ? <FiHeadphones size={14} /> : <FiVolume2 size={14} />}
-                    </button>
-                    <span id={`${id}-definition`} className="option-definition" role="tooltip">{option.definition}</span>
-                  </div>
                 </div>
               )
             })}
@@ -410,7 +519,20 @@ export default function Quiz() {
                   {speakingId === "correct-answer" ? <FiHeadphones size={13} /> : <FiPlay size={12} />}
                   {speakingId === "correct-answer" ? "Stop reading" : "Read correct answer aloud"}
                 </button>
-                <div className="source-transcript">{correctAnswerText()}</div>
+                <div className="source-transcript">
+                  {getTranscriptBlocks().map((block, index) => (
+                    <div className="source-block" key={`${block.id}-${index}`}>
+                      <div className="source-block-header">
+                        <strong>{block.label}</strong>
+                        <button className="listen-link" type="button" onClick={() => speak(`source-block-${block.id}`, block.text)}>
+                          {speakingId === `source-block-${block.id}` ? <FiHeadphones size={13} /> : <FiPlay size={12} />}
+                          {speakingId === `source-block-${block.id}` ? "Pause" : "Listen"}
+                        </button>
+                      </div>
+                      <p>{block.text}</p>
+                    </div>
+                  ))}
+                </div>
               </details>
               {!isCorrect && <span className="correct-answer-note">Correct answer: {question.correct.join(" and ")}</span>}
               {isCorrect && <button className="ai-explain-button" type="button" onClick={askForExplanation} disabled={aiLoading}>

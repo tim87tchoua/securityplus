@@ -15,7 +15,7 @@ const trainerChannels: { name: string; href: string; icon: IconType }[] = [
 export default function Workspace({ children }: { children: ReactNode }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const location = useLocation()
-  const pageName = location.pathname === "/library" ? "Your sessions" : location.pathname === "/labs" ? "Lab practique" : "Practice studio"
+  const pageName = location.pathname === "/library" ? "Your sessions" : location.pathname === "/labs" ? "Lab practique" : location.pathname.startsWith("/results/") ? "Section results" : "Practice studio"
 
   return (
     <div className="app-shell">
